@@ -397,11 +397,11 @@ WP_Redis_Queue::get_instance();
  * Helper функции
  */
 function wp_redis_queue_push($queue, $job_data, $priority = 0) {
-    return WP_Redis_Queue::get_instance()->push($queue, $job_data, $priority);
+    return WP_Redis_Queue::get_instance()->push($queue, json_encode($job_data), $priority);
 }
 
 function wp_redis_queue_push_delayed($queue, $job_data, $delay, $priority = 0) {
-    return WP_Redis_Queue::get_instance()->push_delayed($queue, $job_data, $delay, $priority);
+    return WP_Redis_Queue::get_instance()->push_delayed($queue, json_encode($job_data), $delay, $priority);
 }
 
 function wp_redis_queue_size($queue) {

@@ -156,7 +156,7 @@ class Auth_Registration_Controller {
             'user_id' => $user_id,
             'email' => $email,
             'first_name' => $first_name
-        ), 5);
+        ), 3600);
     }
     
     private function queue_verification_email($user_id, $email, $token) {
@@ -165,6 +165,6 @@ class Auth_Registration_Controller {
             'user_id' => $user_id,
             'email' => $email,
             'token' => $token
-        ), 10);
+        ), 3600);
     }
 }

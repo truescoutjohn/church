@@ -275,7 +275,7 @@ function wp_redis() {
 }
 
 function wp_redis_set($key, $value, $expiration = 0) {
-    return wp_redis()->set($key, $value, $expiration);
+    return wp_redis()->set($key, json_encode($value), $expiration);
 }
 
 function wp_redis_get($key) {
