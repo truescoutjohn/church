@@ -8,6 +8,7 @@ if (!defined('ABSPATH')) {
 }
 
 define('AUTH_API_DIR', plugin_dir_path(__FILE__));
+require_once AUTH_API_DIR . 'includes/telegram/init.php';
 
 add_action('plugins_loaded', function() {
     if (!class_exists('WP_Redis_Manager') || !class_exists('WP_Redis_Queue')) {

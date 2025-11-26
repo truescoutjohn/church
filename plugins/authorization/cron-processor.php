@@ -36,16 +36,18 @@ if (!$redis->is_connected()) {
 log_message("Redis: connected");
 
 // Обработка очередей
-if (class_exists('Auth_Email_Queue_Handler')) {
+if (class_exists('Auth_Email_Queue_Handler') && class_exists('Telegram_Notification_Handler')) {
     $start = microtime(true);
-    $processor = Auth_Email_Queue_Handler::get_instance();
-    $processed = $processor->process_all(100);
+    $email_handler= Auth_Email_Queue_Handler::get_instance();
+    $telegram_handler = Telegram_Notification_Handler::get_instance();
+    $processed = $email_handler->process_all(100);
+    $processed += $telegram_handler->process_all(100);
     $duration = round(microtime(true) - $start, 2);
     
     log_message("Processed: {$processed} items in {$duration}s");
     
     $stats = $processor->get_queue_stats();
-    log_message("Remaining - emails: {$stats['email_jobs']}, notifications: {$stats['email_sending']}");
+    log_message("Remaining - emails: {$stats['emails']}, total: {$stats['total']}");
 } else {
     log_message("ERROR: Auth Email Queue Handler not found");
 }

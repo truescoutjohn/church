@@ -13,6 +13,7 @@ class Auth_Login_Controller {
     private $token_manager = null;
     private $logger = null;
     private $rate_limiter = null;
+    private $redis = null;
     
     public static function get_instance() {
         if (null === self::$instance) {
@@ -52,6 +53,12 @@ class Auth_Login_Controller {
                 )
             )
         ));
+
+        register_rest_route($namespace, '/finally-login', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'finally_login'),
+            'permission_callback' => '__return_true'
+        ));
         
         // Logout
         register_rest_route($namespace, '/logout', array(
@@ -72,12 +79,11 @@ class Auth_Login_Controller {
         if(!$this->is_checked_otp($request)){
             return new WP_REST_Response(array(
                 'success' => false,
-                'message' => 'Too many login attempts. Please try again later.'
-            ), 429);
+                'message' => 'Invalid email or wrong otp'
+            ), 400);
         }
-
-
-        
+        $email = $request->get_json_params()['email'];
+        $user = get_user_by('email', $email);
         // Сброс счетчика попыток
         $this->rate_limiter->reset_login_attempts($email);
         
@@ -131,7 +137,7 @@ class Auth_Login_Controller {
         
         $otp = $this->get_otp();
 
-        $this->redis->set('user: ' . $email, $otp, 60);
+        $this->redis->set('user: ' . $email, $otp, 600);
 
         $this->queue_send_otp($user->ID, $email, $otp);
 
@@ -223,20 +229,14 @@ class Auth_Login_Controller {
     private function is_checked_otp($request){
         $data = $request->get_json_params($request);
         if(empty($data['email']) || empty($data['otp'])){
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'No email or otp'
-            ), 400);
+            return false;
         }
 
         $key = 'user: ' . $data['email']; 
         $otp = $this->redis->get($key);
         
         if(empty($otp)){
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Invalid otp'
-            ), 400);
+            return false;
         }
         
         return $otp === $data['otp'];

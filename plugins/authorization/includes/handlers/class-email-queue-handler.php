@@ -1,6 +1,7 @@
 <?php
 /**
  * Обработчик email очередей для Auth
+ * ОДНА ОЧЕРЕДЬ: 'emails' для всего процесса
  */
 
 if (!defined('ABSPATH')) {
@@ -33,30 +34,20 @@ class Auth_Email_Queue_Handler {
         add_action('redis_queue_job_send_password_reset', [$this, 'handle_password_reset'], 10, 2);
         add_action('redis_queue_job_send_otp', [$this, 'handle_send_otp'], 10, 2);
         add_action('redis_queue_job_login_notification', [$this, 'handle_login_notification'], 10, 2);
+        
+        // НОВЫЙ: обработчик для готовых email
+        add_action('redis_queue_job_ready_email', [$this, 'handle_ready_email'], 10, 2);
     }
     
     /**
-     * ЕДИНСТВЕННЫЙ МЕТОД для обработки всех email очередей
-     * Обрабатывает обе очереди: 'emails' и 'email_notification'
+     * ЕДИНСТВЕННЫЙ МЕТОД для обработки очереди 'emails'
      */
     public function process_all($limit = 100) {
-        $total = 0;
-        
-        // Шаг 1: Обработать задачи из 'emails' (превратить в готовые письма)
-        $total += $this->process_email_jobs($limit / 2);
-        
-        return $total;
-    }
-    
-    /**
-     * Обработка очереди 'emails' - превращает задачи в готовые письма
-     */
-    private function process_email_jobs($limit = 50) {
         $processed = 0;
         
         while ($processed < $limit && $this->queue->size('emails') > 0) {
             $job = $this->queue->pop('emails');
-            var_dump($job);
+            
             if (!$job) {
                 break;
             }
@@ -64,7 +55,6 @@ class Auth_Email_Queue_Handler {
             $job_data = json_decode($job['data'], true);
             
             if (!isset($job_data['type'])) {
-                error_log("jobs " . json_encode($job_data));
                 error_log("Job type not specified in emails queue");
                 $this->queue->complete($job);
                 continue;
@@ -73,11 +63,13 @@ class Auth_Email_Queue_Handler {
             try {
                 // Вызываем соответствующий обработчик через хук
                 $hook_name = 'redis_queue_job_' . $job_data['type'];
-                do_action($hook_name, $job_data, ['queue' => 'emails']);
+                do_action($hook_name, $job_data, ['queue' => 'emails', 'job' => $job]);
                 
                 // Задача успешно обработана
                 $this->queue->complete($job);
                 $processed++;
+                
+                error_log("Processed email job: {$job_data['type']}");
                 
             } catch (Exception $e) {
                 error_log("Error processing email job: " . $e->getMessage());
@@ -90,48 +82,6 @@ class Auth_Email_Queue_Handler {
         
         return $processed;
     }
-    
-    // /**
-    //  * Обработка очереди 'email_notification' - отправка готовых писем
-    //  */
-    // private function process_email_sending($limit = 50) {
-    //     $sent = 0;
-        
-    //     while ($sent < $limit && $this->queue->size('emails') > 0) {
-    //         $job = $this->queue->pop('emails');
-            
-    //         if (!$job) {
-    //             break;
-    //         }
-            
-    //         $email_data = json_decode($job['data'], true);
-            
-    //         try {
-    //             // Отправка через SendPulse
-    //             $success = $this->send_via_sendpulse(
-    //                 $email_data['to'],
-    //                 $email_data['subject'],
-    //                 $email_data['message']
-    //             );
-                
-    //             if ($success) {
-    //                 $this->queue->complete($job);
-    //                 $sent++;
-    //                 error_log("Email sent to {$email_data['to']}: {$email_data['subject']}");
-    //             } else {
-    //                 throw new Exception('SendPulse API failed');
-    //             }
-                
-    //         } catch (Exception $e) {
-    //             error_log("Error sending email: " . $e->getMessage());
-    //             $this->queue->fail($job, $e->getMessage());
-    //         }
-            
-    //         usleep(100000); // 0.1 сек между отправками
-    //     }
-        
-    //     return $sent;
-    // }
     
     /**
      * Отправка через SendPulse API
@@ -159,16 +109,45 @@ class Auth_Email_Queue_Handler {
     }
     
     /**
-     * Добавить готовое письмо в очередь отправки
+     * Добавить готовое письмо в ту же очередь 'emails' с типом 'ready_email'
      */
     private function queue_email($to, $subject, $message) {
-        return $this->queue->push('emails', json_encode([
+        // Добавляем готовый email в ту же очередь 'emails' с типом 'ready_email'
+        $result = $this->queue->push('emails', json_encode([
+            'type' => 'ready_email',  // Специальный тип для готовых писем
             'to' => $to,
             'subject' => $subject,
             'message' => $message,
             'attempts' => 0,
             'created_at' => time()
-        ]));
+        ]), 100); // Высокий приоритет для отправки
+        
+        if ($result) {
+            error_log("Ready email queued for sending to: {$to}, subject: {$subject}");
+        } else {
+            error_log("Failed to queue ready email to: {$to}");
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * НОВЫЙ ОБРАБОТЧИК: Отправка готового письма
+     */
+    public function handle_ready_email($job_data, $context) {
+        $to = $job_data['to'];
+        $subject = $job_data['subject'];
+        $message = $job_data['message'];
+        
+        error_log("Sending ready email to: {$to}");
+        
+        $success = $this->send_via_sendpulse($to, $subject, $message);
+        
+        if ($success) {
+            error_log("Email sent successfully to {$to}: {$subject}");
+        } else {
+            throw new Exception("Failed to send email to {$to}");
+        }
     }
     
     public function handle_welcome_email($job_data, $context) {
@@ -232,7 +211,7 @@ class Auth_Email_Queue_Handler {
                 <div style='background-color: #f0f0f0; padding: 20px; margin: 20px 0; border-radius: 5px;'>
                     <h1 style='font-size: 36px; letter-spacing: 8px; margin: 0; color: #0073aa;'>{$otp}</h1>
                 </div>
-                <p style='color: #d63638;'><strong>Код действителен в течение 1 минуты.</strong></p>
+                <p style='color: #d63638;'><strong>Код действителен в течение 10 минуты.</strong></p>
             </div>
         ";
         
@@ -271,144 +250,8 @@ class Auth_Email_Queue_Handler {
      */
     public function get_queue_stats() {
         return [
-            'email_jobs' => $this->queue->size('emails'),
-            'email_sending' => $this->queue->size('email_notification'),
-            'total' => $this->queue->size('emails') + $this->queue->size('email_notification')
+            'emails' => $this->queue->size('emails'),
+            'total' => $this->queue->size('emails')
         ];
     }
 }
-// class Auth_Email_Queue_Handler {
-    
-//     private static $instance = null;
-//     private $email_notification = null;
-//     private $queue = null;
-    
-//     public static function get_instance() {
-//         if (null === self::$instance) {
-//             self::$instance = new self();
-//         }
-//         return self::$instance;
-//     }
-    
-//     private function __construct() {
-//         $this->queue = WP_Redis_Queue::get_instance();
-//         $this->email_notification = Email_Notification::get_instance($this->queue);
-//     }
-    
-//     /**
-//      * Регистрация хуков для обработки задач
-//      */
-//     public function register_handlers() {
-//         add_action('redis_queue_job_send_welcome_email', array($this, 'handle_welcome_email'), 10, 2);
-//         add_action('redis_queue_job_send_verification_email', array($this, 'handle_verification_email'), 10, 2);
-//         add_action('redis_queue_job_send_password_reset', array($this, 'handle_password_reset_email'), 10, 2);
-//         add_action('redis_queue_job_send_otp', array($this, 'handle_send_otp'), 10, 2);
-//     }
-    
-//     /**
-//      * НОВЫЙ МЕТОД: Обработка очереди emails
-//      * Этот метод достает задачи из очереди и вызывает соответствующие хуки
-//      */
-//     public function process_emails_queue($limit = 10) {
-//         $processed = 0;
-        
-//         while ($processed < $limit && $this->queue->size('emails') > 0) {
-//             $job = $this->queue->pop('emails');
-            
-//             if (!$job) {
-//                 break;
-//             }
-            
-//             $job_data = json_decode($job['data'], true);
-            
-//             if (!isset($job_data['type'])) {
-//                 error_log("Job type not specified in emails queue");
-//                 continue;
-//             }
-            
-//             try {
-//                 // Формируем имя хука и вызываем его
-//                 $hook_name = 'redis_queue_job_' . $job_data['type'];
-//                 do_action($hook_name, $job_data, array(
-//                     'queue' => 'emails',
-//                     'processed_at' => time()
-//                 ));
-                
-//                 $processed++;
-//             } catch (Exception $e) {
-//                 error_log("Error processing email job: " . $e->getMessage());
-                
-//                 // Повторная попытка
-//                 if (!isset($job_data['attempts'])) {
-//                     $job_data['attempts'] = 0;
-//                 }
-                
-//                 if ($job_data['attempts'] < 3) {
-//                     $job_data['attempts']++;
-//                     $this->queue->push('emails', json_encode($job_data));
-//                 }
-//             }
-//         }
-        
-//         return $processed;
-//     }
-    
-//     public function handle_welcome_email($job_data, $job) {
-//         $user_id = $job_data['user_id'];
-//         $email = $job_data['email'];
-//         $first_name = $job_data['first_name'] ?? '';
-        
-//         $result = $this->email_notification->send_welcome_email($user_id, $email, $first_name);
-        
-//         if (!$result) {
-//             error_log("Failed to queue welcome email for user {$user_id}");
-//             throw new Exception('Failed to queue welcome email');
-//         }
-        
-//         error_log("Welcome email queued for user {$user_id}");
-//     }
-    
-//     public function handle_verification_email($job_data, $job) {
-//         $user_id = $job_data['user_id'];
-//         $email = $job_data['email'];
-//         $token = $job_data['token'];
-        
-//         $result = $this->email_notification->send_verification_email($user_id, $email, $token);
-        
-//         if (!$result) {
-//             error_log("Failed to queue verification email for user {$user_id}");
-//             throw new Exception('Failed to queue verification email');
-//         }
-        
-//         error_log("Verification email queued for user {$user_id}");
-//     }
-    
-//     public function handle_password_reset_email($job_data, $job) {
-//         $user_id = $job_data['user_id'];
-//         $email = $job_data['email'];
-//         $token = $job_data['token'];
-        
-//         $result = $this->email_notification->send_password_reset_email($user_id, $email, $token);
-        
-//         if (!$result) {
-//             error_log("Failed to queue password reset email for user {$user_id}");
-//             throw new Exception('Failed to queue password reset email');
-//         }
-        
-//         error_log("Password reset email queued for user {$user_id}");
-//     }
-
-//     public function handle_send_otp($job_data, $job) {
-//         $email = $job_data['email'];
-//         $otp = $job_data['otp'];
-        
-//         $result = $this->email_notification->send_send_otp($email, $otp);
-        
-//         if (!$result) {
-//             error_log("Failed to queue password reset email for user {$user_id}");
-//             throw new Exception('Failed to queue password reset email');
-//         }
-        
-//         error_log("Password reset email queued for user {$user_id}");
-//     }
-// }
